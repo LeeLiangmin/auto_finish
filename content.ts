@@ -590,6 +590,31 @@ export async function selectAnswersByDetectedAnswers(answers: Map<string, string
   return successCount > 0;
 }
 
+// 查找确认对话框按钮（包括"仍要交卷"等）
+function findConfirmDialogButton(): Element | null {
+  const confirmTexts = [
+    "确认", "确定", "confirm", "ok",
+    "仍要交卷", "继续提交", "确认提交", "确定提交",
+    "仍要提交", "继续交卷", "确认交卷"
+  ];
+  
+  for (const text of confirmTexts) {
+    const button = findElementByText("button", text) ||
+                   findElementByText("a", text) ||
+                   findElementByText("div", text);
+    if (button && isElementVisible(button)) {
+      // 检查是否是确认按钮（通常确认按钮会有特定的样式或位置）
+      // 排除取消按钮（通常包含"取消"、"取消提交"等）
+      const buttonText = button.textContent?.trim() || "";
+      if (!buttonText.includes("取消") && !buttonText.includes("cancel")) {
+        return button;
+      }
+    }
+  }
+  
+  return null;
+}
+
 // 处理单个考试（完整流程：提交 -> 显示答案 -> 重新选择 -> 再次提交）
 export async function handleSingleExam(submitButton: Element, index: number, total: number): Promise<boolean> {
   if (!submitButton) {
@@ -621,11 +646,10 @@ export async function handleSingleExam(submitButton: Element, index: number, tot
   // 等待可能的确认对话框
   await wait(1000);
 
-  // 处理确认对话框（如果有）
-  const confirmButton = findElementByText("button", "确认") ||
-                       findElementByText("button", "确定") ||
-                       findElementByText("button", "confirm");
+  // 处理确认对话框（如果有，包括"仍要交卷"等）
+  const confirmButton = findConfirmDialogButton();
   if (confirmButton && isElementVisible(confirmButton)) {
+    console.log(`检测到确认对话框，点击确认按钮: ${confirmButton.textContent?.trim()}`);
     await safeClick(confirmButton);
     await wait(500);
   }
@@ -682,10 +706,10 @@ export async function handleSingleExam(submitButton: Element, index: number, tot
           await safeClick(newSubmitButton);
           await wait(1000);
 
-          // 再次处理确认对话框
-          const newConfirmButton = findElementByText("button", "确认") ||
-                                  findElementByText("button", "确定");
+          // 再次处理确认对话框（包括"仍要交卷"等）
+          const newConfirmButton = findConfirmDialogButton();
           if (newConfirmButton && isElementVisible(newConfirmButton)) {
+            console.log(`检测到确认对话框，点击确认按钮: ${newConfirmButton.textContent?.trim()}`);
             await safeClick(newConfirmButton);
             await wait(500);
           }
@@ -1029,8 +1053,131 @@ function isCourseCompleted(element: Element): boolean {
   return hasCompletedClass;
 }
 
+// 滚动课程列表以加载全部内容
+async function scrollCourseListToLoadAll(): Promise<void> {
+  console.log("📜 开始滚动课程列表以加载全部内容...");
+  
+  // 查找课程列表容器
+  const selectors = defaultConfig.courseListSelector.split(",").map(s => s.trim());
+  let container: Element | null = null;
+  
+  for (const selector of selectors) {
+    const containers = document.querySelectorAll(selector);
+    for (const c of containers) {
+      if (isElementVisible(c) && c instanceof HTMLElement) {
+        // 检查容器是否可滚动
+        const style = window.getComputedStyle(c);
+        const isScrollable = c.scrollHeight > c.clientHeight || 
+                           style.overflow === "auto" || 
+                           style.overflow === "scroll" ||
+                           style.overflowY === "auto" ||
+                           style.overflowY === "scroll";
+        
+        if (isScrollable) {
+          container = c;
+          console.log(`✅ 找到可滚动的课程列表容器: ${selector}`);
+          break;
+        }
+      }
+    }
+    if (container) break;
+  }
+  
+  // 如果没找到可滚动的容器，尝试查找所有可能的容器
+  if (!container) {
+    for (const selector of selectors) {
+      const containers = document.querySelectorAll(selector);
+      for (const c of containers) {
+        if (isElementVisible(c) && c instanceof HTMLElement) {
+          container = c;
+          console.log(`✅ 找到课程列表容器: ${selector}`);
+          break;
+        }
+      }
+      if (container) break;
+    }
+  }
+  
+  if (!container || !(container instanceof HTMLElement)) {
+    console.log("⚠️ 未找到课程列表容器，跳过滚动");
+    return;
+  }
+  
+  const scrollContainer = container as HTMLElement;
+  let previousItemCount = 0;
+  let currentItemCount = 0;
+  let scrollAttempts = 0;
+  const maxScrollAttempts = 50; // 防止无限滚动
+  const scrollStep = 300; // 每次滚动的距离（像素）
+  
+  // 获取初始课程项数量
+  const initialItems = scrollContainer.querySelectorAll(defaultConfig.courseItemSelector);
+  previousItemCount = initialItems.length;
+  console.log(`📊 初始课程项数量: ${previousItemCount}`);
+  
+  // 逐步滚动到底部
+  while (scrollAttempts < maxScrollAttempts) {
+    // 记录滚动前的位置
+    const scrollTopBefore = scrollContainer.scrollTop;
+    const scrollHeightBefore = scrollContainer.scrollHeight;
+    
+    // 滚动到底部
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    
+    // 等待内容加载
+    await wait(500);
+    
+    // 检查是否有新内容加载
+    const currentItems = scrollContainer.querySelectorAll(defaultConfig.courseItemSelector);
+    currentItemCount = currentItems.length;
+    
+    // 检查滚动位置是否改变
+    const scrollTopAfter = scrollContainer.scrollTop;
+    const scrollHeightAfter = scrollContainer.scrollHeight;
+    
+    // 如果滚动位置没有变化，且没有新内容，说明已经到底了
+    if (scrollTopAfter === scrollTopBefore && 
+        scrollHeightAfter === scrollHeightBefore && 
+        currentItemCount === previousItemCount) {
+      console.log(`✅ 已滚动到底部，课程项数量: ${currentItemCount}`);
+      break;
+    }
+    
+    // 如果有新内容加载，继续滚动
+    if (currentItemCount > previousItemCount) {
+      console.log(`📈 检测到新内容，课程项数量: ${previousItemCount} -> ${currentItemCount}`);
+      previousItemCount = currentItemCount;
+      scrollAttempts = 0; // 重置尝试次数
+    } else {
+      // 如果没有新内容，尝试小幅滚动
+      scrollContainer.scrollTop += scrollStep;
+      await wait(300);
+      scrollAttempts++;
+    }
+    
+    // 如果滚动高度没有变化，说明可能已经到底
+    if (scrollHeightAfter === scrollHeightBefore) {
+      scrollAttempts++;
+    }
+  }
+  
+  // 最后再等待一下，确保所有内容都加载完成
+  await wait(1000);
+  
+  const finalItems = scrollContainer.querySelectorAll(defaultConfig.courseItemSelector);
+  console.log(`✅ 滚动完成，最终课程项数量: ${finalItems.length}`);
+  
+  // 滚动回顶部（可选，保持原始位置）
+  // scrollContainer.scrollTop = 0;
+  // await wait(300);
+}
+
 // 初始化课程列表
-function initializeCourseList(): CourseItem[] {
+async function initializeCourseList(): Promise<CourseItem[]> {
+  // 先滚动列表加载全部内容
+  await scrollCourseListToLoadAll();
+  
+  // 然后获取课程列表
   const courseElements = getCourseList();
   const courses: CourseItem[] = courseElements.map((element, index) => {
     const isCompleted = isCourseCompleted(element);
@@ -1160,7 +1307,7 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
     // 初始化或获取课程列表
     let coursesToProcess: CourseItem[];
     if (courseItemsList.length === 0) {
-      coursesToProcess = initializeCourseList();
+      coursesToProcess = await initializeCourseList();
     } else {
       coursesToProcess = courseItemsList;
     }
@@ -1295,7 +1442,12 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     case "selectCourses":
       // 初始化课程列表（如果还没有）
       if (courseItemsList.length === 0) {
-        initializeCourseList();
+        initializeCourseList().then(() => {
+          sendResponse({ progress: getProgress() });
+        }).catch(() => {
+          sendResponse({ progress: getProgress() });
+        });
+        return true; // 保持消息通道开放
       }
       sendResponse({ progress: getProgress() });
       break;

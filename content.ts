@@ -1019,6 +1019,15 @@ function updateProgress(index: number, total: number, courseName: string): void 
 
 // 检查课程是否已完成（通过样式类判断）
 function isCourseCompleted(element: Element): boolean {
+  // 优先检查 anticon-check-circle 类（最可靠的完成标记）
+  const hasCheckCircle = element.querySelector(".anticon-check-circle") !== null ||
+                        element.classList.contains("anticon-check-circle") ||
+                        element.querySelector("[class*='anticon-check-circle']") !== null;
+  
+  if (hasCheckCircle) {
+    return true; // 已完成
+  }
+  
   // 检查是否有 pie pie-zero 类（未完成）
   // 如果元素有 pie 类且有 pie-zero 类，说明未完成
   const hasPieZero = element.classList.contains("pie") && element.classList.contains("pie-zero");
@@ -1029,6 +1038,12 @@ function isCourseCompleted(element: Element): boolean {
   
   // 如果元素有 pie 类但没有 pie-zero，说明已完成
   if (element.classList.contains("pie") && !element.classList.contains("pie-zero")) {
+    return true; // 已完成
+  }
+  
+  // 检查子元素中是否有 anticon-check-circle
+  const checkCircleElements = element.querySelectorAll(".anticon-check-circle, [class*='anticon-check-circle']");
+  if (checkCircleElements.length > 0) {
     return true; // 已完成
   }
   
@@ -1202,6 +1217,7 @@ async function initializeCourseList(): Promise<CourseItem[]> {
 
 // 检测并添加子课程（支持多级嵌套）
 // 如果之前识别到过（元素已在列表中），不处理，否则添加到列表中
+// 如果父课程已完成（有 anticon-check-circle），不检测子课程
 async function detectAndAddSubCourses(
   parentCourse: CourseItem, 
   depth: number = 0,
@@ -1209,6 +1225,12 @@ async function detectAndAddSubCourses(
 ): Promise<CourseItem[]> {
   const indent = "  ".repeat(depth);
   console.log(`${indent}🔍 [层级 ${depth}] 检测 ${parentCourse.name} 的子课程...`);
+  
+  // 如果父课程已完成（有 anticon-check-circle），不检测子课程
+  if (parentCourse.element && isCourseCompleted(parentCourse.element)) {
+    console.log(`${indent}⏭️ 父课程已完成（有 anticon-check-circle），跳过子课程检测`);
+    return [];
+  }
   
   // 防止无限递归
   if (depth >= maxDepth) {
@@ -1369,6 +1391,15 @@ async function processCourse(course: CourseItem, index: number, total: number): 
     return;
   }
 
+  // 检查课程是否已完成（有 anticon-check-circle）
+  const isCompleted = isCourseCompleted(course.element);
+  if (isCompleted) {
+    console.log(`⏭️ 跳过已完成的课程: ${course.name} (有 anticon-check-circle)`);
+    course.status = "completed";
+    updateCourseList();
+    return; // 已完成的课程及其子项都不处理
+  }
+
   course.status = "processing";
   updateCourseList();
   
@@ -1388,7 +1419,7 @@ async function processCourse(course: CourseItem, index: number, total: number): 
     // 等待内容加载
     await wait(defaultConfig.waitForContentLoad);
     
-    // 检测并添加子课程
+    // 检测并添加子课程（只有未完成的课程才检测子课程）
     const subCourses = await detectAndAddSubCourses(course);
     
     // 先处理当前页面的内容（如果有）
@@ -1549,6 +1580,24 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
       if (processedCourseIds.has(course.id)) {
         i++;
         continue;
+      }
+      
+      // 检查课程元素是否已完成（有 anticon-check-circle）
+      if (course.element && isCourseCompleted(course.element)) {
+        // 如果被选中且用户想要重新处理，允许重新处理
+        if (selectedCourseIds && selectedCourseIds.includes(course.id)) {
+          console.log(`🔄 重新处理已完成的课程: ${course.name} (有 anticon-check-circle)`);
+          course.status = "pending";
+          course.error = undefined;
+          updateCourseList();
+        } else {
+          // 如果已完成且未被选中，直接跳过（包括子项也不处理）
+          console.log(`⏭️ 跳过已完成的课程: ${course.name} (有 anticon-check-circle)`);
+          course.status = "completed";
+          updateCourseList();
+          i++;
+          continue;
+        }
       }
       
       // 如果课程已完成但被选中，允许重新处理（重置状态）

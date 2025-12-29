@@ -37,6 +37,27 @@ const contentResult = await build({
 });
 console.log(`  ✓ content.js ${minify ? "(已压缩)" : "(开发模式)"}`);
 
+// 移除文件末尾的 export 语句（content script 不需要模块导出）
+const contentJsPath = join(distDir, "content.js");
+if (existsSync(contentJsPath)) {
+  const fs = require("fs");
+  let content = fs.readFileSync(contentJsPath, "utf-8");
+  
+  // 移除文件末尾的 export 语句（匹配 export { ... } 格式）
+  content = content.replace(/export\s*\{[^}]*\}\s*;?\s*$/m, "");
+  
+  // 移除单独的 export 语句
+  content = content.replace(/export\s+\{[^}]*\}\s*;?\s*$/m, "");
+  
+  // 确保文件以分号或换行结束
+  if (!content.trim().endsWith(";") && !content.trim().endsWith("\n")) {
+    content = content.trim() + "\n";
+  }
+  
+  fs.writeFileSync(contentJsPath, content, "utf-8");
+  console.log("  ✓ 已清理 export 语句");
+}
+
 // 2. 复制静态文件
 console.log("\n📋 复制静态文件...");
 

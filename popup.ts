@@ -4,6 +4,7 @@ import { Progress, ActionStatus, Message } from "./types";
 const btnStart = document.getElementById("btnStart") as HTMLButtonElement;
 const btnStop = document.getElementById("btnStop") as HTMLButtonElement;
 const btnReload = document.getElementById("btnReload") as HTMLButtonElement;
+const btnInject = document.getElementById("btnInject") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const progressInfo = document.getElementById("progressInfo") as HTMLDivElement;
 const currentCourseSpan = document.getElementById("currentCourse") as HTMLSpanElement;
@@ -70,7 +71,7 @@ function updateUI(progress: Progress): void {
 }
 
 // 检查当前标签页是否支持 content script
-async function checkTabSupport(): Promise<{ supported: boolean; reason?: string }> {
+async function checkTabSupport(): Promise<{ supported: boolean; reason?: string; details?: string }> {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab.id) {
@@ -87,20 +88,70 @@ async function checkTabSupport(): Promise<{ supported: boolean; reason?: string 
       return { supported: false, reason: "当前页面不支持插件（特殊页面）" };
     }
 
-    // 尝试发送消息检查 content script 是否已加载
+    // 检查 content script 是否已注入
     try {
-      await chrome.tabs.sendMessage(tab.id, { type: "getProgress" });
-      return { supported: true };
+      // 先尝试发送消息检查（最快的方式）
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, { type: "getProgress" });
+        if (response) {
+          return { supported: true };
+        }
+      } catch (msgError: any) {
+        // 消息发送失败，尝试执行脚本检查
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              // 检查是否有我们的全局变量
+              return typeof window !== 'undefined' && 
+                     (window as any).__AUTO_FINISH_LOADED === true;
+            }
+          });
+          
+          if (results && results[0]?.result === true) {
+            // Content script 已加载但消息通道有问题
+            return { 
+              supported: false, 
+              reason: "Content script 已加载但通信失败",
+              details: "请刷新页面"
+            };
+          }
+        } catch (scriptError: any) {
+          // 执行脚本也失败，可能是权限问题
+          console.error("执行脚本失败:", scriptError);
+        }
+      }
+      
+      // Content script 未加载
+      return { 
+        supported: false, 
+        reason: "Content script 未加载",
+        details: "请刷新页面或检查插件是否已正确安装"
+      };
     } catch (error: any) {
       // 如果消息发送失败，可能是 content script 未加载
-      if (error.message?.includes("Could not establish connection") || 
-          error.message?.includes("Receiving end does not exist")) {
-        return { supported: false, reason: "Content script 未加载，请刷新页面" };
+      const errorMsg = error.message || String(error);
+      if (errorMsg.includes("Could not establish connection") || 
+          errorMsg.includes("Receiving end does not exist") ||
+          errorMsg.includes("Extension context invalidated")) {
+        return { 
+          supported: false, 
+          reason: "Content script 未加载",
+          details: "请刷新页面或重新加载插件扩展"
+        };
       }
-      throw error;
+      return { 
+        supported: false, 
+        reason: "检查失败",
+        details: errorMsg
+      };
     }
   } catch (error: any) {
-    return { supported: false, reason: error.message || "未知错误" };
+    return { 
+      supported: false, 
+      reason: error.message || "未知错误",
+      details: String(error)
+    };
   }
 }
 
@@ -131,7 +182,26 @@ async function startAutoFinish(): Promise<void> {
     // 先检查页面支持
     const support = await checkTabSupport();
     if (!support.supported) {
-      statusDiv.textContent = support.reason || "当前页面不支持，请刷新页面";
+      // 如果 content script 未加载，尝试手动注入
+      if (support.reason?.includes("未加载") || support.reason?.includes("Content script")) {
+        statusDiv.textContent = "正在尝试注入脚本...";
+        statusDiv.className = "status";
+        
+        const injected = await injectContentScript();
+        if (injected) {
+          // 等待一下让脚本加载
+          await new Promise(resolve => setTimeout(resolve, 500));
+          // 再次检查
+          const retrySupport = await checkTabSupport();
+          if (retrySupport.supported) {
+            await sendMessageToContentScript({ type: "start" });
+            await refreshProgress();
+            return;
+          }
+        }
+      }
+      
+      statusDiv.textContent = support.reason || support.details || "当前页面不支持，请刷新页面";
       statusDiv.className = "status error";
       return;
     }
@@ -227,6 +297,71 @@ btnReload.addEventListener("click", async () => {
     statusDiv.className = "status error";
   }
 });
+
+// 手动注入按钮
+btnInject.addEventListener("click", async () => {
+  statusDiv.textContent = "正在手动注入脚本...";
+  statusDiv.className = "status";
+  
+  const injected = await injectContentScript();
+  if (injected) {
+    statusDiv.textContent = "注入成功！请稍候...";
+    statusDiv.className = "status running";
+    
+    // 等待脚本加载
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 检查是否成功
+    const support = await checkTabSupport();
+    if (support.supported) {
+      statusDiv.textContent = "注入成功！可以开始使用了";
+      statusDiv.className = "status completed";
+      await refreshProgress();
+    } else {
+      statusDiv.textContent = "注入失败，请刷新页面";
+      statusDiv.className = "status error";
+    }
+  } else {
+    statusDiv.textContent = "注入失败，请检查页面权限";
+    statusDiv.className = "status error";
+  }
+});
+
+// 手动注入 content script（备用方案）
+async function injectContentScript(): Promise<boolean> {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.id) {
+      return false;
+    }
+
+    // 检查是否是特殊页面
+    const url = tab.url || "";
+    if (url.startsWith("chrome://") || 
+        url.startsWith("edge://") || 
+        url.startsWith("about:") ||
+        url.startsWith("chrome-extension://") ||
+        url.startsWith("moz-extension://")) {
+      return false;
+    }
+
+    // 尝试注入 content script
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"]
+      });
+      console.log("手动注入 content script 成功");
+      return true;
+    } catch (injectError: any) {
+      console.error("注入失败:", injectError);
+      return false;
+    }
+  } catch (error: any) {
+    console.error("手动注入失败:", error);
+    return false;
+  }
+}
 
 // 初始化：获取当前进度
 refreshProgress();

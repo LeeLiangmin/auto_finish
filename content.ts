@@ -12,6 +12,27 @@ import {
   isElementVisible
 } from "./utils";
 
+// 标记 content script 已加载
+(window as any).__AUTO_FINISH_LOADED = true;
+console.log("课程自动完成工具 - Content Script 已加载");
+
+// 抑制来自网站本身的非关键警告（可选）
+if (typeof console !== 'undefined') {
+  const originalWarn = console.warn;
+  console.warn = function(...args: any[]) {
+    // 过滤掉非被动事件监听器的警告（这些通常来自网站本身）
+    const message = args.join(' ');
+    if (message.includes('non-passive event listener') || 
+        message.includes('mousewheel') ||
+        message.includes('touchstart') ||
+        message.includes('touchmove')) {
+      // 静默忽略这些警告，它们不影响插件功能
+      return;
+    }
+    originalWarn.apply(console, args);
+  };
+}
+
 // 全局状态
 let isRunning = false;
 let currentProgress: Progress = {

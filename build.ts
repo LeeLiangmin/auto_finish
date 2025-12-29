@@ -52,19 +52,11 @@ if (existsSync("popup.html")) {
   console.log("  ✓ popup.html");
 }
 
-// 复制图标文件（如果存在）
-const iconFiles = ["icon16.png", "icon48.png", "icon128.png"];
-let iconCount = 0;
-for (const icon of iconFiles) {
-  if (existsSync(icon)) {
-    copyFileSync(icon, join(distDir, icon));
-    console.log(`  ✓ ${icon}`);
-    iconCount++;
-  }
-}
-
-if (iconCount === 0) {
-  console.log("  ⚠ 未找到图标文件，请参考 ICONS.md 创建图标");
+// 处理图标文件（从 icons 目录转换）
+const { processIcons } = await import("./process-icons.ts");
+const iconsProcessed = await processIcons();
+if (!iconsProcessed) {
+  console.log("  ⚠ 图标处理失败，请检查 icons 目录");
 }
 
 console.log("\n✅ 构建完成！所有文件已输出到 dist 目录");

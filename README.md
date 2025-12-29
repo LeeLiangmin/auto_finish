@@ -31,16 +31,22 @@ bun run build:dev
 - `content.js` - 内容脚本
 - `manifest.json` - 插件配置
 - `popup.html` - 弹窗界面
-- `icon*.png` - 图标文件（如果存在）
+- `icon*.png` - 图标文件（自动从 `icons` 目录转换）
 
 ### 2. 准备图标文件
 
-插件需要图标文件，请创建以下图标文件（或使用占位图标）：
-- `icon16.png` (16x16)
-- `icon48.png` (48x48)
-- `icon128.png` (128x128)
+插件需要图标文件，请将图标文件放在 `icons` 目录下：
 
-如果没有图标，可以暂时使用任何 PNG 图片文件重命名。
+**方式1：使用统一图标**
+- 将图标文件命名为 `icon.jpeg` 放在 `icons/` 目录
+- 构建时会自动缩放为三个尺寸
+
+**方式2：使用分尺寸图标**
+- `icons/icon16.jpeg` (16x16)
+- `icons/icon48.jpeg` (48x48)
+- `icons/icon128.jpeg` (128x128)
+
+构建脚本会自动将 JPEG 图标转换为 PNG 格式并输出到 `dist` 目录。
 
 ### 3. 加载插件到浏览器
 

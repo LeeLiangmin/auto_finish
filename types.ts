@@ -21,6 +21,15 @@ export interface CurrentAction {
   description: string;
 }
 
+// 课程项信息
+export interface CourseItem {
+  id: string;
+  name: string;
+  element: Element | null; // 在 content script 中使用
+  status: "pending" | "processing" | "completed" | "error" | "skipped";
+  error?: string;
+}
+
 // 进度信息
 export interface Progress {
   currentIndex: number;
@@ -28,11 +37,12 @@ export interface Progress {
   currentCourse: string;
   status: ActionStatus;
   currentAction?: CurrentAction;
+  courses?: CourseItem[]; // 课程列表
 }
 
 // 消息类型
 export interface Message {
-  type: "start" | "stop" | "getProgress" | "progressUpdate";
+  type: "start" | "stop" | "getProgress" | "progressUpdate" | "selectCourses" | "retryCourse";
   data?: any;
 }
 

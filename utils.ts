@@ -3,7 +3,7 @@ import { Config } from "./types";
 // 默认配置
 export const defaultConfig: Config = {
   courseListSelector: "aside, .sidebar, .course-list, .menu, nav, .course-nav, .chapter-list, .lesson-list, [class*='course-list'], [class*='chapter-list'], [class*='lesson-list'], [class*='catalog'], [class*='directory']",
-  courseItemSelector: "li, .course-item, .lesson-item, .tree-node-content, .chapter-item, .section-item, [class*='course-item'], [class*='lesson-item'], [class*='chapter-item'], a[href*='course'], a[href*='lesson'], a[href*='chapter'], a[href*='section']",
+  courseItemSelector: "li, .course-item, .lesson-item, .tree-node-content, .chapter-item, .section-item, [class*='course-item'], [class*='lesson-item'], [class*='chapter-item'], [class*='pie'], a[href*='course'], a[href*='lesson'], a[href*='chapter'], a[href*='section']",
   videoSelector: "video",
   pptNextButtonSelector: "button:contains('下一页'), button:contains('next'), .next-btn, .next-button, [aria-label*='next'], [aria-label*='下一页']",
   examSubmitButtonSelector: "button:contains('提交'), button:contains('submit'), .submit-btn, [type='submit']",

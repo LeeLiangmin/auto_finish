@@ -1,4 +1,4 @@
-import { Progress, ActionStatus, Message } from "./types";
+import { Progress, ActionStatus, Message, CourseItem } from "./types";
 
 // DOM 元素引用
 const btnStart = document.getElementById("btnStart") as HTMLButtonElement;
@@ -6,6 +6,10 @@ const btnStop = document.getElementById("btnStop") as HTMLButtonElement;
 const btnReload = document.getElementById("btnReload") as HTMLButtonElement;
 const btnInject = document.getElementById("btnInject") as HTMLButtonElement;
 const btnDebug = document.getElementById("btnDebug") as HTMLButtonElement;
+const courseListContainer = document.getElementById("courseListContainer") as HTMLDivElement;
+const courseList = document.getElementById("courseList") as HTMLDivElement;
+const btnSelectAll = document.getElementById("btnSelectAll") as HTMLButtonElement;
+const btnSelectNone = document.getElementById("btnSelectNone") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const progressInfo = document.getElementById("progressInfo") as HTMLDivElement;
 const currentCourseSpan = document.getElementById("currentCourse") as HTMLSpanElement;
@@ -50,6 +54,11 @@ function updateUI(progress: Progress): void {
   statusDiv.textContent = statusText;
   statusDiv.className = `status ${statusClass}`;
 
+  // 更新课程列表
+  if (progress.courses && progress.courses.length > 0) {
+    renderCourseList(progress.courses);
+  }
+
   // 更新进度信息
   if (progress.totalCount > 0) {
     progressInfo.classList.remove("hidden");
@@ -68,6 +77,93 @@ function updateUI(progress: Progress): void {
     currentActionDiv.classList.remove("hidden");
   } else {
     currentActionDiv.classList.add("hidden");
+  }
+}
+
+// 渲染课程列表
+function renderCourseList(courses: CourseItem[] | undefined): void {
+  if (!courses || courses.length === 0) {
+    if (courseListContainer) {
+      courseListContainer.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (!courseListContainer || !courseList) return;
+
+  courseListContainer.classList.remove("hidden");
+  courseList.innerHTML = "";
+
+  courses.forEach((course) => {
+    const courseItem = document.createElement("div");
+    courseItem.style.cssText = "display: flex; align-items: center; padding: 6px; margin-bottom: 4px; border-radius: 3px; background: #f9f9f9;";
+    
+    // 状态颜色
+    let statusColor = "#666";
+    let statusText = "待处理";
+    if (course.status === "processing") {
+      statusColor = "#2196F3";
+      statusText = "处理中";
+      courseItem.style.background = "#e3f2fd";
+    } else if (course.status === "completed") {
+      statusColor = "#4CAF50";
+      statusText = "已完成";
+      courseItem.style.background = "#e8f5e9";
+    } else if (course.status === "error") {
+      statusColor = "#f44336";
+      statusText = "失败";
+      courseItem.style.background = "#ffebee";
+    } else if (course.status === "skipped") {
+      statusColor = "#999";
+      statusText = "已跳过";
+    }
+
+    // 已完成的课程默认不选中
+    const shouldCheck = course.status === "pending" || course.status === "error";
+    
+    courseItem.innerHTML = `
+      <input type="checkbox" id="course-${course.id}" ${course.status === "completed" ? "disabled" : ""} 
+             style="margin-right: 8px; cursor: pointer;" ${shouldCheck ? "checked" : ""}>
+      <label for="course-${course.id}" style="flex: 1; cursor: pointer; font-size: 12px; margin-right: 8px;">
+        <span style="display: block; font-weight: 500;">${course.name}</span>
+        <span style="font-size: 11px; color: ${statusColor};">${statusText}${course.error ? `: ${course.error}` : ""}</span>
+      </label>
+      ${course.status === "error" ? `<button class="btn-retry" data-course-id="${course.id}" style="padding: 4px 8px; font-size: 11px; background: #FF9800; color: white; border: none; border-radius: 3px; cursor: pointer;">重试</button>` : ""}
+    `;
+
+    courseList.appendChild(courseItem);
+  });
+
+  // 绑定重试按钮事件
+  courseList.querySelectorAll(".btn-retry").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      const courseId = (e.target as HTMLElement).getAttribute("data-course-id");
+      if (courseId) {
+        await retryCourse(courseId);
+      }
+    });
+  });
+}
+
+// 获取选中的课程ID
+function getSelectedCourseIds(): string[] {
+  if (!courseList) return [];
+  const checkboxes = courseList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:disabled):checked');
+  return Array.from(checkboxes).map(cb => cb.id.replace("course-", ""));
+}
+
+// 重试单个课程
+async function retryCourse(courseId: string): Promise<void> {
+  try {
+    await sendMessageToContentScript({ 
+      type: "retryCourse",
+      data: { courseId }
+    });
+    await refreshProgress();
+  } catch (error: any) {
+    console.error("重试失败:", error);
+    statusDiv.textContent = `重试失败: ${error.message}`;
+    statusDiv.className = "status error";
   }
 }
 
@@ -177,6 +273,21 @@ async function sendMessageToContentScript(message: Message): Promise<any> {
   }
 }
 
+// 重试单个课程
+async function retryCourse(courseId: string): Promise<void> {
+  try {
+    await sendMessageToContentScript({ 
+      type: "retryCourse",
+      data: { courseId }
+    });
+    await refreshProgress();
+  } catch (error: any) {
+    console.error("重试失败:", error);
+    statusDiv.textContent = `重试失败: ${error.message}`;
+    statusDiv.className = "status error";
+  }
+}
+
 // 开始自动完成
 async function startAutoFinish(): Promise<void> {
   try {
@@ -195,7 +306,16 @@ async function startAutoFinish(): Promise<void> {
           // 再次检查
           const retrySupport = await checkTabSupport();
           if (retrySupport.supported) {
-            await sendMessageToContentScript({ type: "start" });
+            // 先获取课程列表
+            await sendMessageToContentScript({ type: "selectCourses" });
+            await refreshProgress();
+            
+            // 获取选中的课程ID
+            const selectedIds = getSelectedCourseIds();
+            await sendMessageToContentScript({ 
+              type: "start",
+              data: { selectedCourseIds: selectedIds }
+            });
             await refreshProgress();
             return;
           }
@@ -207,7 +327,18 @@ async function startAutoFinish(): Promise<void> {
       return;
     }
 
-    await sendMessageToContentScript({ type: "start" });
+    // 先获取课程列表（如果还没有）
+    if (!currentProgress.courses || currentProgress.courses.length === 0) {
+      await sendMessageToContentScript({ type: "selectCourses" });
+      await refreshProgress();
+    }
+
+    // 获取选中的课程ID
+    const selectedIds = getSelectedCourseIds();
+    await sendMessageToContentScript({ 
+      type: "start",
+      data: { selectedCourseIds: selectedIds.length > 0 ? selectedIds : undefined }
+    });
     // 立即获取进度更新
     await refreshProgress();
   } catch (error: any) {
@@ -445,8 +576,29 @@ async function injectContentScript(): Promise<boolean> {
   }
 }
 
+// 全选/全不选按钮
+btnSelectAll.addEventListener("click", () => {
+  const checkboxes = courseList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:disabled)');
+  checkboxes.forEach(cb => cb.checked = true);
+});
+
+btnSelectNone.addEventListener("click", () => {
+  const checkboxes = courseList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:disabled)');
+  checkboxes.forEach(cb => cb.checked = false);
+});
+
 // 初始化：获取当前进度
 refreshProgress();
+
+// 如果已经有课程列表，也获取一下
+setTimeout(async () => {
+  try {
+    await sendMessageToContentScript({ type: "selectCourses" });
+    await refreshProgress();
+  } catch (e) {
+    // 忽略错误
+  }
+}, 500);
 
 // 定期刷新进度（当运行中时）
 setInterval(() => {

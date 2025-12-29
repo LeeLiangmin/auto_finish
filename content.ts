@@ -1,4 +1,4 @@
-import { ContentType, ActionStatus, Progress, CurrentAction, Message, PageContent } from "./types";
+import { ContentType, ActionStatus, Progress, CurrentAction, Message, PageContent, CourseItem } from "./types";
 import {
   defaultConfig,
   wait,
@@ -35,11 +35,13 @@ if (typeof console !== 'undefined') {
 
 // 全局状态
 let isRunning = false;
+let courseItemsList: CourseItem[] = [];
 let currentProgress: Progress = {
   currentIndex: 0,
   totalCount: 0,
   currentCourse: "",
-  status: ActionStatus.IDLE
+  status: ActionStatus.IDLE,
+  courses: []
 };
 
 // 检测页面上的所有内容类型
@@ -869,9 +871,45 @@ function debugCourseItems(): void {
 export function getCourseList(): Element[] {
   const items = getVisibleCourseItems(defaultConfig);
   
-  // 如果没找到，进行调试并尝试更通用的方法
+  // 如果没找到，尝试查找包含 pie 类的元素（课程进度指示器）
   if (items.length === 0) {
-    console.log("⚠️ 使用默认选择器未找到课程项，开始调试...");
+    console.log("⚠️ 使用默认选择器未找到课程项，尝试查找包含 pie 类的元素...");
+    
+    // 查找所有包含 pie 类的元素（通常是课程进度指示器）
+    const pieElements = document.querySelectorAll("[class*='pie'], .pie");
+    const foundItems: Element[] = [];
+    
+    for (const el of pieElements) {
+      // 查找包含 pie 的父元素或兄弟元素（课程项可能在附近）
+      let courseItem: Element | null = null;
+      
+      // 检查元素本身是否是课程项
+      if (el.textContent && el.textContent.trim().length > 0 && el.textContent.trim().length < 200) {
+        courseItem = el;
+      } else {
+        // 检查父元素
+        let parent = el.parentElement;
+        while (parent && parent !== document.body) {
+          const text = parent.textContent?.trim() || "";
+          if (text.length > 0 && text.length < 200 && isElementVisible(parent)) {
+            courseItem = parent;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+      
+      if (courseItem && isElementVisible(courseItem) && !foundItems.includes(courseItem)) {
+        foundItems.push(courseItem);
+      }
+    }
+    
+    if (foundItems.length > 0) {
+      console.log(`✅ 通过 pie 类找到 ${foundItems.length} 个可能的课程项`);
+      return Array.from(new Set(foundItems));
+    }
+    
+    // 如果还是没找到，进行调试
     debugCourseListContainers();
     debugCourseItems();
     
@@ -891,7 +929,6 @@ export function getCourseList(): Element[] {
       "a[href*='chapter']"
     ];
     
-    const foundItems: Element[] = [];
     for (const selector of keywordSelectors) {
       try {
         const elements = document.querySelectorAll(selector);
@@ -912,7 +949,7 @@ export function getCourseList(): Element[] {
     if (foundItems.length > 0) {
       console.log(`✅ 通用方法找到 ${foundItems.length} 个可能的课程项`);
       // 限制数量，避免太多
-      return foundItems.slice(0, 100);
+      return Array.from(new Set(foundItems)).slice(0, 100);
     }
   }
   
@@ -956,8 +993,161 @@ function updateProgress(index: number, total: number, courseName: string): void 
   });
 }
 
+// 检查课程是否已完成（通过样式类判断）
+function isCourseCompleted(element: Element): boolean {
+  // 检查是否有 pie pie-zero 类（未完成）
+  // 如果元素有 pie 类且有 pie-zero 类，说明未完成
+  const hasPieZero = element.classList.contains("pie") && element.classList.contains("pie-zero");
+  
+  if (hasPieZero) {
+    return false; // 未完成
+  }
+  
+  // 如果元素有 pie 类但没有 pie-zero，说明已完成
+  if (element.classList.contains("pie") && !element.classList.contains("pie-zero")) {
+    return true; // 已完成
+  }
+  
+  // 检查子元素中是否有 pie pie-zero（可能样式在子元素上）
+  const pieElements = element.querySelectorAll(".pie");
+  for (const pieEl of pieElements) {
+    if (pieEl.classList.contains("pie-zero")) {
+      return false; // 找到未完成标记
+    }
+    // 如果有 pie 但没有 pie-zero，可能是已完成
+    if (pieEl.classList.contains("pie") && !pieEl.classList.contains("pie-zero")) {
+      return true; // 已完成
+    }
+  }
+  
+  // 检查其他完成标记
+  const hasCompletedClass = element.classList.contains("completed") || 
+                           element.classList.contains("done") ||
+                           element.classList.contains("finished") ||
+                           element.getAttribute("data-completed") === "true";
+  
+  return hasCompletedClass;
+}
+
+// 初始化课程列表
+function initializeCourseList(): CourseItem[] {
+  const courseElements = getCourseList();
+  const courses: CourseItem[] = courseElements.map((element, index) => {
+    const isCompleted = isCourseCompleted(element);
+    return {
+      id: `course-${index}`,
+      name: element.textContent?.trim() || `课程 ${index + 1}`,
+      element: element,
+      status: isCompleted ? "completed" : "pending"
+    };
+  });
+  
+  courseItemsList = courses;
+  currentProgress.courses = courses.map(c => ({
+    id: c.id,
+    name: c.name,
+    element: null, // 不序列化 DOM 元素
+    status: c.status
+  }));
+  
+  return courses;
+}
+
+// 处理单个课程
+async function processCourse(course: CourseItem, index: number, total: number): Promise<void> {
+  if (!course.element) {
+    course.status = "error";
+    course.error = "课程元素不存在";
+    updateCourseList();
+    return;
+  }
+
+  course.status = "processing";
+  updateCourseList();
+  
+  updateProgress(index + 1, total, course.name);
+  console.log(`处理课程 ${index + 1}/${total}: ${course.name}`);
+
+  try {
+    // 点击课程项
+    const clicked = await clickCourseItem(course.element);
+    if (!clicked) {
+      course.status = "error";
+      course.error = "无法点击课程项";
+      updateCourseList();
+      return;
+    }
+
+    // 等待内容加载
+    await wait(defaultConfig.waitForContentLoad);
+
+    // 循环处理当前页面的所有内容，直到没有"下一讲"按钮
+    let hasNextLesson = true;
+    let pageIteration = 0;
+    const maxPageIterations = 50; // 防止无限循环
+
+    while (hasNextLesson && pageIteration < maxPageIterations && isRunning) {
+      pageIteration++;
+      console.log(`处理页面内容 (第 ${pageIteration} 次迭代)...`);
+
+      // 处理当前页面的所有内容
+      const result = await processCurrentContent();
+      if (!result) {
+        console.log("处理内容时出错");
+        break;
+      }
+
+      // 检查是否有"下一讲"按钮
+      const nextLessonButton = findNextLessonButton();
+      if (nextLessonButton) {
+        console.log("检测到下一讲按钮，准备跳转...");
+        const clicked = await clickNextLesson();
+        if (clicked) {
+          // 等待新内容加载
+          await wait(defaultConfig.waitForContentLoad);
+          // 继续循环处理新页面的内容
+          continue;
+        } else {
+          hasNextLesson = false;
+        }
+      } else {
+        hasNextLesson = false;
+      }
+    }
+
+    if (pageIteration >= maxPageIterations) {
+      console.log("达到最大页面迭代次数，停止处理");
+    }
+
+    course.status = "completed";
+    updateCourseList();
+  } catch (error: any) {
+    console.error(`处理课程 ${course.name} 时出错:`, error);
+    course.status = "error";
+    course.error = error.message || "处理失败";
+    updateCourseList();
+  }
+}
+
+// 更新课程列表状态
+function updateCourseList(): void {
+  if (currentProgress.courses) {
+    currentProgress.courses = courseItemsList.map(c => ({
+      id: c.id,
+      name: c.name,
+      element: null,
+      status: c.status,
+      error: c.error
+    }));
+  }
+  sendMessageToPopup({
+    type: "progressUpdate",
+    data: currentProgress
+  });
+}
+
 // 主控制循环
-export async function startAutoFinish(): Promise<void> {
+export async function startAutoFinish(selectedCourseIds?: string[]): Promise<void> {
   if (isRunning) {
     console.log("已经在运行中");
     return;
@@ -967,9 +1157,15 @@ export async function startAutoFinish(): Promise<void> {
   currentProgress.status = ActionStatus.RUNNING;
 
   try {
-    // 获取课程列表
-    const courseItems = getCourseList();
-    if (courseItems.length === 0) {
+    // 初始化或获取课程列表
+    let coursesToProcess: CourseItem[];
+    if (courseItemsList.length === 0) {
+      coursesToProcess = initializeCourseList();
+    } else {
+      coursesToProcess = courseItemsList;
+    }
+
+    if (coursesToProcess.length === 0) {
       console.log("❌ 未找到课程列表");
       console.log("💡 提示：请打开浏览器控制台（F12）查看详细的调试信息");
       console.log("💡 如果页面确实有课程列表，可能需要调整选择器配置");
@@ -988,84 +1184,80 @@ export async function startAutoFinish(): Promise<void> {
       return;
     }
 
-    console.log(`找到 ${courseItems.length} 个课程项`);
+    // 过滤选中的课程
+    let courses = coursesToProcess;
+    if (selectedCourseIds && selectedCourseIds.length > 0) {
+      courses = coursesToProcess.filter(c => selectedCourseIds.includes(c.id));
+    } else {
+      // 如果没有指定，只处理未完成的课程
+      courses = coursesToProcess.filter(c => c.status !== "completed" && c.status !== "skipped");
+    }
+
+    if (courses.length === 0) {
+      console.log("没有需要处理的课程");
+      currentProgress.status = ActionStatus.COMPLETED;
+      isRunning = false;
+      updateCourseList();
+      return;
+    }
+
+    console.log(`找到 ${coursesToProcess.length} 个课程项，将处理 ${courses.length} 个`);
 
     // 遍历每个课程项
-    for (let i = 0; i < courseItems.length; i++) {
+    for (let i = 0; i < courses.length; i++) {
       if (!isRunning) {
         console.log("已停止");
         break;
       }
 
-      const item = courseItems[i];
-      const courseName = item.textContent?.trim() || `课程 ${i + 1}`;
-
-      updateProgress(i + 1, courseItems.length, courseName);
-      console.log(`处理课程 ${i + 1}/${courseItems.length}: ${courseName}`);
-
-      // 点击课程项
-      const clicked = await clickCourseItem(item);
-      if (!clicked) {
-        console.log(`无法点击课程项 ${i + 1}`);
+      const course = courses[i];
+      
+      // 跳过已完成的课程
+      if (course.status === "completed" || course.status === "skipped") {
         continue;
       }
 
-      // 等待内容加载
-      await wait(defaultConfig.waitForContentLoad);
-
-      // 循环处理当前页面的所有内容，直到没有"下一讲"按钮
-      let hasNextLesson = true;
-      let pageIteration = 0;
-      const maxPageIterations = 50; // 防止无限循环
-
-      while (hasNextLesson && pageIteration < maxPageIterations && isRunning) {
-        pageIteration++;
-        console.log(`处理页面内容 (第 ${pageIteration} 次迭代)...`);
-
-        // 处理当前页面的所有内容
-        const result = await processCurrentContent();
-        if (!result) {
-          console.log("处理内容时出错");
-          break;
-        }
-
-        // 检查是否有"下一讲"按钮
-        const nextLessonButton = findNextLessonButton();
-        if (nextLessonButton) {
-          console.log("检测到下一讲按钮，准备跳转...");
-          const clicked = await clickNextLesson();
-          if (clicked) {
-            // 等待新内容加载
-            await wait(defaultConfig.waitForContentLoad);
-            // 继续循环处理新页面的内容
-            continue;
-          } else {
-            hasNextLesson = false;
-          }
-        } else {
-          hasNextLesson = false;
-        }
-      }
-
-      if (pageIteration >= maxPageIterations) {
-        console.log("达到最大页面迭代次数，停止处理");
-      }
+      await processCourse(course, i, courses.length);
 
       // 等待一段时间再处理下一个课程项
       await wait(defaultConfig.waitAfterClick);
     }
 
-    currentProgress.status = ActionStatus.COMPLETED;
-    console.log("所有课程处理完成");
+    // 检查是否所有课程都完成了
+    const allCompleted = courseItemsList.every(c => c.status === "completed" || c.status === "skipped");
+    currentProgress.status = allCompleted ? ActionStatus.COMPLETED : ActionStatus.RUNNING;
+    
+    if (allCompleted) {
+      console.log("所有课程处理完成");
+    }
   } catch (error) {
     console.error("处理过程中出错:", error);
     currentProgress.status = ActionStatus.ERROR;
   } finally {
     isRunning = false;
-    sendMessageToPopup({
-      type: "progressUpdate",
-      data: currentProgress
-    });
+    updateCourseList();
+  }
+}
+
+// 重试单个课程
+export async function retryCourse(courseId: string): Promise<void> {
+  const course = courseItemsList.find(c => c.id === courseId);
+  if (!course) {
+    console.log(`未找到课程: ${courseId}`);
+    return;
+  }
+
+  // 重置课程状态
+  course.status = "pending";
+  course.error = undefined;
+  updateCourseList();
+
+  // 如果当前没有运行，直接处理这个课程
+  if (!isRunning) {
+    await processCourse(course, courseItemsList.indexOf(course), courseItemsList.length);
+  } else {
+    // 如果正在运行，将课程添加到待处理队列
+    console.log(`课程 ${course.name} 已加入重试队列`);
   }
 }
 
@@ -1089,7 +1281,8 @@ export function getProgress(): Progress {
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   switch (message.type) {
     case "start":
-      startAutoFinish();
+      const selectedIds = message.data?.selectedCourseIds;
+      startAutoFinish(selectedIds);
       sendResponse({ success: true });
       break;
     case "stop":
@@ -1098,6 +1291,17 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       break;
     case "getProgress":
       sendResponse({ progress: getProgress() });
+      break;
+    case "selectCourses":
+      // 初始化课程列表（如果还没有）
+      if (courseItemsList.length === 0) {
+        initializeCourseList();
+      }
+      sendResponse({ progress: getProgress() });
+      break;
+    case "retryCourse":
+      retryCourse(message.data?.courseId);
+      sendResponse({ success: true });
       break;
   }
   return true; // 保持消息通道开放

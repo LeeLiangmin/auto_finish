@@ -118,12 +118,13 @@ function renderCourseList(courses: CourseItem[] | undefined): void {
       statusText = "已跳过";
     }
 
-    // 已完成的课程默认不选中
+    // 已完成的课程默认不选中，但可以手动选中重新处理
     const shouldCheck = course.status === "pending" || course.status === "error";
     
     courseItem.innerHTML = `
-      <input type="checkbox" id="course-${course.id}" ${course.status === "completed" ? "disabled" : ""} 
-             style="margin-right: 8px; cursor: pointer;" ${shouldCheck ? "checked" : ""}>
+      <input type="checkbox" id="course-${course.id}" 
+             style="margin-right: 8px; cursor: pointer;" ${shouldCheck ? "checked" : ""}
+             ${course.status === "completed" ? 'title="可选中以重新处理"' : ''}>
       <label for="course-${course.id}" style="flex: 1; cursor: pointer; font-size: 12px; margin-right: 8px;">
         <span style="display: block; font-weight: 500;">${course.name}</span>
         <span style="font-size: 11px; color: ${statusColor};">${statusText}${course.error ? `: ${course.error}` : ""}</span>
@@ -145,10 +146,10 @@ function renderCourseList(courses: CourseItem[] | undefined): void {
   });
 }
 
-// 获取选中的课程ID
+// 获取选中的课程ID（包括已完成的，用于重新处理）
 function getSelectedCourseIds(): string[] {
   if (!courseList) return [];
-  const checkboxes = courseList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not(:disabled):checked');
+  const checkboxes = courseList.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:checked');
   return Array.from(checkboxes).map(cb => cb.id.replace("course-", ""));
 }
 

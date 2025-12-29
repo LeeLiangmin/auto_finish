@@ -1200,6 +1200,166 @@ async function initializeCourseList(): Promise<CourseItem[]> {
   return courses;
 }
 
+// 检测并添加子课程（支持多级嵌套）
+// 如果之前识别到过（元素已在列表中），不处理，否则添加到列表中
+async function detectAndAddSubCourses(
+  parentCourse: CourseItem, 
+  depth: number = 0,
+  maxDepth: number = 10
+): Promise<CourseItem[]> {
+  const indent = "  ".repeat(depth);
+  console.log(`${indent}🔍 [层级 ${depth}] 检测 ${parentCourse.name} 的子课程...`);
+  
+  // 防止无限递归
+  if (depth >= maxDepth) {
+    console.log(`${indent}⚠️ 达到最大嵌套深度 ${maxDepth}，停止检测`);
+    return [];
+  }
+  
+  // 等待子课程展开
+  await wait(1000);
+  
+  const newCourses: CourseItem[] = [];
+  // 使用 Set 存储已存在的元素引用，用于快速查找
+  const existingElements = new Set(courseItemsList.map(c => c.element).filter(Boolean));
+  
+  if (!parentCourse.element) {
+    return newCourses;
+  }
+  
+  // 方法1: 查找父元素下的直接子元素（展开的子列表）
+  let currentElement: Element | null = parentCourse.element;
+  
+  // 查找父元素的兄弟元素或子元素（展开的子列表通常在父元素之后）
+  let parent = currentElement.parentElement;
+  if (parent) {
+    // 查找父元素后面的兄弟元素（可能是展开的子列表）
+    let nextSibling = currentElement.nextElementSibling;
+    while (nextSibling) {
+      const subItems = nextSibling.querySelectorAll(defaultConfig.courseItemSelector);
+      for (const subItem of subItems) {
+        // 如果之前识别到过（元素已在列表中），跳过
+        if (existingElements.has(subItem)) {
+          console.log(`${indent}  ⏭️ [层级 ${depth}] 跳过已识别的课程: ${subItem.textContent?.trim() || '未知'}`);
+          continue;
+        }
+        
+        if (isElementVisible(subItem)) {
+          const isCompleted = isCourseCompleted(subItem);
+          const subCourse: CourseItem = {
+            id: `course-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            name: subItem.textContent?.trim() || `子课程 ${newCourses.length + 1}`,
+            element: subItem,
+            status: isCompleted ? "completed" : "pending"
+          };
+          newCourses.push(subCourse);
+          existingElements.add(subItem);
+          console.log(`${indent}  ✅ [层级 ${depth}] 发现新子课程: ${subCourse.name} (${isCompleted ? '已完成' : '待处理'})`);
+        }
+      }
+      nextSibling = nextSibling.nextElementSibling;
+    }
+    
+    // 查找父元素内的子元素（嵌套的子列表）
+    const childItems = currentElement.querySelectorAll(defaultConfig.courseItemSelector);
+    for (const childItem of childItems) {
+      // 排除父元素本身
+      if (childItem === currentElement) continue;
+      
+      // 如果之前识别到过（元素已在列表中），跳过
+      if (existingElements.has(childItem)) {
+        console.log(`${indent}  ⏭️ [层级 ${depth}] 跳过已识别的嵌套课程: ${childItem.textContent?.trim() || '未知'}`);
+        continue;
+      }
+      
+      if (isElementVisible(childItem)) {
+        const isCompleted = isCourseCompleted(childItem);
+        const subCourse: CourseItem = {
+          id: `course-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: childItem.textContent?.trim() || `子课程 ${newCourses.length + 1}`,
+          element: childItem,
+          status: isCompleted ? "completed" : "pending"
+        };
+        newCourses.push(subCourse);
+        existingElements.add(childItem);
+        console.log(`${indent}  ✅ [层级 ${depth}] 发现新嵌套子课程: ${subCourse.name} (${isCompleted ? '已完成' : '待处理'})`);
+      }
+    }
+  }
+  
+  // 方法2: 重新扫描整个课程列表，查找新出现的课程（仅在顶层执行）
+  if (depth === 0) {
+    const allCourseElements = getCourseList();
+    for (const element of allCourseElements) {
+      // 如果之前识别到过（元素已在列表中），跳过
+      if (existingElements.has(element)) {
+        continue;
+      }
+      
+      if (isElementVisible(element)) {
+        const isCompleted = isCourseCompleted(element);
+        const subCourse: CourseItem = {
+          id: `course-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          name: element.textContent?.trim() || `子课程 ${newCourses.length + 1}`,
+          element: element,
+          status: isCompleted ? "completed" : "pending"
+        };
+        newCourses.push(subCourse);
+        existingElements.add(element);
+        console.log(`${indent}  ✅ [层级 ${depth}] 发现新课程: ${subCourse.name} (${isCompleted ? '已完成' : '待处理'})`);
+      }
+    }
+  }
+  
+  // 将新课程添加到列表中
+  if (newCourses.length > 0) {
+    // 过滤掉已完成的课程（只返回待处理的）
+    const pendingSubCourses = newCourses.filter(c => c.status !== "completed");
+    courseItemsList.push(...newCourses);
+    
+    console.log(`${indent}📝 [层级 ${depth}] 添加了 ${newCourses.length} 个子课程（${pendingSubCourses.length} 个待处理，${newCourses.length - pendingSubCourses.length} 个已完成）`);
+    updateCourseList();
+    
+    return pendingSubCourses;
+  }
+  
+  return [];
+}
+
+// 递归处理所有层级的子课程
+async function processSubCoursesRecursively(
+  subCourses: CourseItem[], 
+  depth: number = 0,
+  maxDepth: number = 10
+): Promise<void> {
+  // 防止无限递归
+  if (depth >= maxDepth) {
+    console.log(`⚠️ 达到最大嵌套深度 ${maxDepth}，停止递归处理`);
+    return;
+  }
+  
+  const indent = "  ".repeat(depth);
+  
+  for (const subCourse of subCourses) {
+    if (!isRunning) {
+      break;
+    }
+    
+    console.log(`${indent}📚 [层级 ${depth}] 处理子课程: ${subCourse.name}`);
+    
+    // 处理当前子课程
+    // processCourse 会：
+    // 1. 点击子课程
+    // 2. 检测并添加它的子课程
+    // 3. 处理当前课程的内容
+    // 4. 递归处理它的子课程
+    await processCourse(subCourse, courseItemsList.indexOf(subCourse), courseItemsList.length);
+    
+    // 等待一段时间再处理下一个子课程
+    await wait(defaultConfig.waitAfterClick);
+  }
+}
+
 // 处理单个课程
 async function processCourse(course: CourseItem, index: number, total: number): Promise<void> {
   if (!course.element) {
@@ -1227,8 +1387,20 @@ async function processCourse(course: CourseItem, index: number, total: number): 
 
     // 等待内容加载
     await wait(defaultConfig.waitForContentLoad);
-
-    // 循环处理当前页面的所有内容，直到没有"下一讲"按钮
+    
+    // 检测并添加子课程
+    const subCourses = await detectAndAddSubCourses(course);
+    
+    // 先处理当前页面的内容（如果有）
+    const pageContent = detectAllContent();
+    const hasContent = pageContent.videos.length > 0 || 
+                      pageContent.ppts.length > 0 || 
+                      pageContent.exams.length > 0;
+    
+    if (hasContent) {
+      console.log(`📄 当前课程有内容，先处理内容...`);
+      
+      // 循环处理当前页面的所有内容，直到没有"下一讲"按钮
     let hasNextLesson = true;
     let pageIteration = 0;
     const maxPageIterations = 50; // 防止无限循环
@@ -1262,10 +1434,24 @@ async function processCourse(course: CourseItem, index: number, total: number): 
       }
     }
 
-    if (pageIteration >= maxPageIterations) {
-      console.log("达到最大页面迭代次数，停止处理");
+      if (pageIteration >= maxPageIterations) {
+        console.log("达到最大页面迭代次数，停止处理");
+      }
+    } else {
+      console.log(`📄 当前课程没有内容，跳过内容处理`);
+    }
+    
+    // 如果有子课程且未完成，递归处理所有层级的子课程
+    if (subCourses.length > 0) {
+      console.log(`📚 发现 ${subCourses.length} 个待处理的子课程，开始递归处理...`);
+      
+      // 递归处理所有子课程（包括子课程的子课程）
+      await processSubCoursesRecursively(subCourses, 0);
+      
+      console.log(`✅ 所有子课程（包括嵌套子课程）处理完成`);
     }
 
+    // 标记当前课程为已完成
     course.status = "completed";
     updateCourseList();
   } catch (error: any) {
@@ -1334,9 +1520,10 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
     // 过滤选中的课程
     let courses = coursesToProcess;
     if (selectedCourseIds && selectedCourseIds.length > 0) {
+      // 如果指定了选中的课程，处理选中的课程（包括已完成的，用于重新处理）
       courses = coursesToProcess.filter(c => selectedCourseIds.includes(c.id));
     } else {
-      // 如果没有指定，只处理未完成的课程
+      // 如果没有指定，只处理未完成的课程（已完成的默认不处理）
       courses = coursesToProcess.filter(c => c.status !== "completed" && c.status !== "skipped");
     }
 
@@ -1350,24 +1537,61 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
 
     console.log(`找到 ${coursesToProcess.length} 个课程项，将处理 ${courses.length} 个`);
 
-    // 遍历每个课程项
-    for (let i = 0; i < courses.length; i++) {
-      if (!isRunning) {
-        console.log("已停止");
-        break;
-      }
-
+    // 使用 Set 来跟踪已处理的课程ID，避免重复处理
+    const processedCourseIds = new Set<string>();
+    
+    // 遍历每个课程项（使用 while 循环以支持动态添加的课程）
+    let i = 0;
+    while (i < courses.length && isRunning) {
       const course = courses[i];
       
-      // 跳过已完成的课程
-      if (course.status === "completed" || course.status === "skipped") {
+      // 跳过已处理的课程（避免重复处理）
+      if (processedCourseIds.has(course.id)) {
+        i++;
+        continue;
+      }
+      
+      // 如果课程已完成但被选中，允许重新处理（重置状态）
+      if (course.status === "completed" && selectedCourseIds && selectedCourseIds.includes(course.id)) {
+        console.log(`🔄 重新处理已完成的课程: ${course.name}`);
+        course.status = "pending";
+        course.error = undefined;
+        updateCourseList();
+      }
+      
+      // 跳过已跳过但未选中的课程
+      if (course.status === "skipped" && (!selectedCourseIds || !selectedCourseIds.includes(course.id))) {
+        i++;
         continue;
       }
 
+      // 标记为已处理
+      processedCourseIds.add(course.id);
+
+      // 处理课程（可能会添加新的子课程）
       await processCourse(course, i, courses.length);
+      
+      // 重新获取课程列表（可能已添加新课程）
+      // 更新 courses 数组，包含新添加的待处理课程
+      const allPendingCourses = courseItemsList.filter(c => 
+        c.status !== "completed" && 
+        c.status !== "skipped" && 
+        !processedCourseIds.has(c.id)
+      );
+      
+      // 如果课程列表有变化，更新 courses 数组
+      if (allPendingCourses.length > 0) {
+        const newCoursesCount = allPendingCourses.length - (courses.length - i - 1);
+        if (newCoursesCount > 0) {
+          console.log(`📈 检测到 ${newCoursesCount} 个新课程，添加到处理队列`);
+          // 将新课程添加到当前 courses 数组的末尾
+          courses.push(...allPendingCourses.filter(c => !courses.includes(c)));
+        }
+      }
 
       // 等待一段时间再处理下一个课程项
       await wait(defaultConfig.waitAfterClick);
+      i++;
     }
 
     // 检查是否所有课程都完成了

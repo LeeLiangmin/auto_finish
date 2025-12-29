@@ -1,0 +1,23 @@
+# 构建输出
+*.js
+!node_modules/**/*.js
+dist/
+
+# 依赖
+node_modules/
+bun.lockb
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.log
+*.tmp

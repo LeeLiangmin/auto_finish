@@ -5,6 +5,7 @@ const btnStart = document.getElementById("btnStart") as HTMLButtonElement;
 const btnStop = document.getElementById("btnStop") as HTMLButtonElement;
 const btnReload = document.getElementById("btnReload") as HTMLButtonElement;
 const btnInject = document.getElementById("btnInject") as HTMLButtonElement;
+const btnDebug = document.getElementById("btnDebug") as HTMLButtonElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 const progressInfo = document.getElementById("progressInfo") as HTMLDivElement;
 const currentCourseSpan = document.getElementById("currentCourse") as HTMLSpanElement;
@@ -323,6 +324,87 @@ btnInject.addEventListener("click", async () => {
     }
   } else {
     statusDiv.textContent = "注入失败，请检查页面权限";
+    statusDiv.className = "status error";
+  }
+});
+
+// 调试按钮
+btnDebug.addEventListener("click", async () => {
+  try {
+    statusDiv.textContent = "正在检测课程列表...";
+    statusDiv.className = "status running";
+    
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab.id) {
+      statusDiv.textContent = "无法获取当前标签页";
+      statusDiv.className = "status error";
+      return;
+    }
+
+    // 执行调试脚本
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        // 获取课程列表
+        const selectors = {
+          containers: "aside, .sidebar, .course-list, .menu, nav, .course-nav, .chapter-list, .lesson-list",
+          items: "li, .course-item, .lesson-item, .tree-node-content, .chapter-item"
+        };
+        
+        const containers = document.querySelectorAll(selectors.containers);
+        const allItems: any[] = [];
+        
+        containers.forEach((container, idx) => {
+          const items = container.querySelectorAll(selectors.items);
+          const visibleItems = Array.from(items).filter((el: any) => {
+            const style = window.getComputedStyle(el);
+            return style.display !== "none" && 
+                   style.visibility !== "hidden" && 
+                   el.offsetWidth > 0 && 
+                   el.offsetHeight > 0;
+          });
+          
+          if (visibleItems.length > 0) {
+            allItems.push({
+              container: {
+                index: idx,
+                className: container.className,
+                id: container.id || "无",
+                itemCount: visibleItems.length
+              },
+              items: Array.from(visibleItems).slice(0, 5).map((el: any) => ({
+                text: el.textContent?.trim().substring(0, 50) || "无文本",
+                className: el.className || "无类名"
+              }))
+            });
+          }
+        });
+        
+        return {
+          containerCount: containers.length,
+          foundContainers: allItems.length,
+          details: allItems
+        };
+      }
+    });
+    
+    if (results && results[0]?.result) {
+      const debugInfo = results[0].result;
+      let message = `找到 ${debugInfo.containerCount} 个容器，${debugInfo.foundContainers} 个包含课程项\n`;
+      message += "请查看浏览器控制台（F12）获取详细信息";
+      
+      statusDiv.textContent = message;
+      statusDiv.className = debugInfo.foundContainers > 0 ? "status completed" : "status error";
+      
+      // 同时在控制台输出
+      console.log("调试信息:", debugInfo);
+    } else {
+      statusDiv.textContent = "调试失败，请检查 content script 是否已加载";
+      statusDiv.className = "status error";
+    }
+  } catch (error: any) {
+    console.error("调试失败:", error);
+    statusDiv.textContent = `调试失败: ${error.message}`;
     statusDiv.className = "status error";
   }
 });

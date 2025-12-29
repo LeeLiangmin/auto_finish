@@ -813,8 +813,110 @@ export async function processCurrentContent(): Promise<boolean> {
 }
 
 // 获取课程列表
+// 调试：获取所有可能的课程列表容器
+function debugCourseListContainers(): void {
+  const selectors = defaultConfig.courseListSelector.split(",").map(s => s.trim());
+  console.log("🔍 调试：查找课程列表容器...");
+  
+  for (const selector of selectors) {
+    const containers = document.querySelectorAll(selector);
+    console.log(`  选择器 "${selector}": 找到 ${containers.length} 个容器`);
+    if (containers.length > 0) {
+      for (let i = 0; i < Math.min(containers.length, 3); i++) {
+        const container = containers[i];
+        const itemCount = container.querySelectorAll(defaultConfig.courseItemSelector).length;
+        console.log(`    容器 ${i + 1}: ${itemCount} 个可能的课程项, 类名: ${container.className}, ID: ${container.id || '无'}`);
+      }
+    }
+  }
+  
+  // 尝试更通用的查找
+  const allPossibleContainers = document.querySelectorAll("aside, nav, .sidebar, .menu, .list, [class*='course'], [class*='lesson'], [class*='chapter']");
+  console.log(`  通用查找: 找到 ${allPossibleContainers.length} 个可能的容器`);
+}
+
+// 调试：获取所有可能的课程项
+function debugCourseItems(): void {
+  const itemSelectors = defaultConfig.courseItemSelector.split(",").map(s => s.trim());
+  console.log("🔍 调试：查找课程项...");
+  
+  for (const selector of itemSelectors) {
+    const items = document.querySelectorAll(selector);
+    const visibleItems = Array.from(items).filter(item => isElementVisible(item));
+    console.log(`  选择器 "${selector}": 找到 ${items.length} 个元素, ${visibleItems.length} 个可见`);
+    if (visibleItems.length > 0 && visibleItems.length <= 10) {
+      visibleItems.forEach((item, idx) => {
+        const text = item.textContent?.trim().substring(0, 30) || "无文本";
+        console.log(`    项 ${idx + 1}: "${text}"`);
+      });
+    }
+  }
+  
+  // 尝试查找所有可能的课程项
+  const allPossibleItems = document.querySelectorAll("li, .item, [class*='course'], [class*='lesson'], [class*='chapter'], a[href*='course'], a[href*='lesson']");
+  const visiblePossibleItems = Array.from(allPossibleItems).filter(item => isElementVisible(item));
+  console.log(`  通用查找: 找到 ${allPossibleItems.length} 个可能的项, ${visiblePossibleItems.length} 个可见`);
+  
+  if (visiblePossibleItems.length > 0 && visiblePossibleItems.length <= 10) {
+    visiblePossibleItems.forEach((item, idx) => {
+      const text = item.textContent?.trim().substring(0, 30) || "无文本";
+      const className = item.className || "无类名";
+      console.log(`    通用项 ${idx + 1}: "${text}" (类名: ${className})`);
+    });
+  }
+}
+
 export function getCourseList(): Element[] {
-  return getVisibleCourseItems(defaultConfig);
+  const items = getVisibleCourseItems(defaultConfig);
+  
+  // 如果没找到，进行调试并尝试更通用的方法
+  if (items.length === 0) {
+    console.log("⚠️ 使用默认选择器未找到课程项，开始调试...");
+    debugCourseListContainers();
+    debugCourseItems();
+    
+    // 尝试更通用的查找方法
+    console.log("🔍 尝试通用查找方法...");
+    
+    // 方法1: 查找所有包含"课程"、"章节"、"课时"等关键词的元素
+    const keywordSelectors = [
+      "li",
+      ".item",
+      "[class*='course']",
+      "[class*='lesson']",
+      "[class*='chapter']",
+      "[class*='section']",
+      "a[href*='course']",
+      "a[href*='lesson']",
+      "a[href*='chapter']"
+    ];
+    
+    const foundItems: Element[] = [];
+    for (const selector of keywordSelectors) {
+      try {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+          if (isElementVisible(el) && !foundItems.includes(el)) {
+            const text = el.textContent?.trim() || "";
+            // 检查是否可能是课程项（有文本内容，不是空的）
+            if (text.length > 0 && text.length < 200) {
+              foundItems.push(el);
+            }
+          }
+        }
+      } catch (e) {
+        // 忽略选择器错误
+      }
+    }
+    
+    if (foundItems.length > 0) {
+      console.log(`✅ 通用方法找到 ${foundItems.length} 个可能的课程项`);
+      // 限制数量，避免太多
+      return foundItems.slice(0, 100);
+    }
+  }
+  
+  return items;
 }
 
 // 点击课程项
@@ -868,7 +970,15 @@ export async function startAutoFinish(): Promise<void> {
     // 获取课程列表
     const courseItems = getCourseList();
     if (courseItems.length === 0) {
-      console.log("未找到课程列表");
+      console.log("❌ 未找到课程列表");
+      console.log("💡 提示：请打开浏览器控制台（F12）查看详细的调试信息");
+      console.log("💡 如果页面确实有课程列表，可能需要调整选择器配置");
+      
+      updateCurrentAction({
+        type: ContentType.UNKNOWN,
+        description: "未找到课程列表，请查看控制台调试信息"
+      });
+      
       currentProgress.status = ActionStatus.ERROR;
       sendMessageToPopup({
         type: "progressUpdate",

@@ -790,8 +790,79 @@ export async function clickNextLesson(): Promise<boolean> {
   return false;
 }
 
+// 检测页面是否是考试/测试页面
+function isExamOrTestPage(): boolean {
+  // 方法1: 检查URL中是否包含考试/测试相关关键词
+  const url = window.location.href.toLowerCase();
+  const examKeywords = ['exam', 'test', 'quiz', '考试', '测试', '测验', 'assessment'];
+  if (examKeywords.some(keyword => url.includes(keyword))) {
+    return true;
+  }
+
+  // 方法2: 检查页面标题
+  const title = document.title.toLowerCase();
+  if (examKeywords.some(keyword => title.includes(keyword))) {
+    return true;
+  }
+
+  // 方法3: 检查页面中是否有明显的考试/测试标识
+  const examIndicators = [
+    '.exam-page',
+    '.test-page',
+    '.quiz-page',
+    '[class*="exam"]',
+    '[class*="test"]',
+    '[class*="quiz"]',
+    '[id*="exam"]',
+    '[id*="test"]',
+    '[id*="quiz"]'
+  ];
+
+  for (const selector of examIndicators) {
+    try {
+      const elements = document.querySelectorAll(selector);
+      if (elements.length > 0) {
+        // 检查是否可见
+        for (const el of elements) {
+          if (isElementVisible(el)) {
+            return true;
+          }
+        }
+      }
+    } catch (e) {
+      // 忽略选择器错误
+    }
+  }
+
+  // 方法4: 检查页面文本内容中是否包含考试/测试关键词
+  const bodyText = document.body.textContent?.toLowerCase() || '';
+  const examTextKeywords = ['考试页面', '测试页面', '测验页面', 'exam page', 'test page', 'quiz page'];
+  if (examTextKeywords.some(keyword => bodyText.includes(keyword))) {
+    return true;
+  }
+
+  // 方法5: 检查是否有大量提交按钮（可能是考试页面）
+  const submitButtons = document.querySelectorAll('button[type="submit"], .submit-btn, button:contains("提交"), button:contains("交卷")');
+  if (submitButtons.length >= 2) {
+    // 如果有多个提交按钮，可能是考试页面
+    return true;
+  }
+
+  return false;
+}
+
 // 处理当前页面的所有内容
 export async function processCurrentContent(): Promise<boolean> {
+  // 首先检查是否是考试/测试页面，如果是则直接跳过
+  if (isExamOrTestPage()) {
+    console.log("⏭️ 检测到考试/测试页面，跳过处理");
+    updateCurrentAction({
+      type: ContentType.UNKNOWN,
+      description: "检测到考试/测试页面，已跳过"
+    });
+    return true; // 返回true表示成功跳过，继续处理下一个
+  }
+
   const pageContent = detectAllContent();
   
   console.log(`检测到页面内容: ${pageContent.videos.length} 个视频, ${pageContent.ppts.length} 个PPT, ${pageContent.exams.length} 个考试`);
@@ -812,20 +883,13 @@ export async function processCurrentContent(): Promise<boolean> {
     }
   }
 
-  // 处理所有考试
+  // 不再处理考试（直接跳过）
   if (pageContent.exams.length > 0) {
-    console.log(`找到 ${pageContent.exams.length} 个考试，开始处理...`);
-    for (let i = 0; i < pageContent.exams.length; i++) {
-      if (!isRunning) {
-        return false;
-      }
-      const examResult = await handleSingleExam(pageContent.exams[i], i, pageContent.exams.length);
-      if (!examResult && isRunning) {
-        return false;
-      }
-      await wait(defaultConfig.waitBetweenActions);
-    }
-    console.log("所有考试处理完成");
+    console.log(`⏭️ 检测到 ${pageContent.exams.length} 个考试，跳过处理`);
+    updateCurrentAction({
+      type: ContentType.EXAM,
+      description: `检测到考试，已跳过`
+    });
   }
 
   // 如果没有任何内容，返回true继续
@@ -1209,7 +1273,8 @@ async function initializeCourseList(): Promise<CourseItem[]> {
     id: c.id,
     name: c.name,
     element: null, // 不序列化 DOM 元素
-    status: c.status
+    status: c.status,
+    retryCount: c.retryCount || 0
   }));
   
   return courses;
@@ -1419,14 +1484,22 @@ async function processCourse(course: CourseItem, index: number, total: number): 
     // 等待内容加载
     await wait(defaultConfig.waitForContentLoad);
     
+    // 检查是否是考试/测试页面，如果是则直接跳过
+    if (isExamOrTestPage()) {
+      console.log(`⏭️ 课程 ${course.name} 是考试/测试页面，跳过处理`);
+      course.status = "skipped";
+      course.error = "考试/测试页面，已跳过";
+      updateCourseList();
+      return;
+    }
+    
     // 检测并添加子课程（只有未完成的课程才检测子课程）
     const subCourses = await detectAndAddSubCourses(course);
     
     // 先处理当前页面的内容（如果有）
     const pageContent = detectAllContent();
     const hasContent = pageContent.videos.length > 0 || 
-                      pageContent.ppts.length > 0 || 
-                      pageContent.exams.length > 0;
+                      pageContent.ppts.length > 0;
     
     if (hasContent) {
       console.log(`📄 当前课程有内容，先处理内容...`);
@@ -1501,7 +1574,8 @@ function updateCourseList(): void {
       name: c.name,
       element: null,
       status: c.status,
-      error: c.error
+      error: c.error,
+      retryCount: c.retryCount || 0
     }));
   }
   sendMessageToPopup({
@@ -1643,12 +1717,16 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
       i++;
     }
 
+    // 第一轮处理完成，刷新界面并检查未完成的课程
+    console.log("📋 第一轮处理完成，开始刷新界面并检查未完成的课程...");
+    await refreshAndCheckIncompleteCourses(selectedCourseIds);
+    
     // 检查是否所有课程都完成了
-    const allCompleted = courseItemsList.every(c => c.status === "completed" || c.status === "skipped");
+    const allCompleted = courseItemsList.every(c => c.status === "completed" || c.status === "skipped" || c.status === "error");
     currentProgress.status = allCompleted ? ActionStatus.COMPLETED : ActionStatus.RUNNING;
     
     if (allCompleted) {
-      console.log("所有课程处理完成");
+      console.log("✅ 所有课程处理完成");
     }
   } catch (error) {
     console.error("处理过程中出错:", error);
@@ -1657,6 +1735,265 @@ export async function startAutoFinish(selectedCourseIds?: string[]): Promise<voi
     isRunning = false;
     updateCourseList();
   }
+}
+
+// 刷新界面并检查未完成的课程，进行补做
+async function refreshAndCheckIncompleteCourses(selectedCourseIds?: string[]): Promise<void> {
+  console.log("🔄 开始刷新界面并检查未完成的课程...");
+  
+  // 等待页面稳定
+  await wait(2000);
+  
+  // 重新获取课程列表元素（因为页面可能已更新）
+  const allCourseElements = getCourseList();
+  
+  // 通过课程名称匹配来更新元素引用
+  const nameToCourseMap = new Map<string, CourseItem[]>();
+  for (const course of courseItemsList) {
+    const name = course.name.trim();
+    if (!nameToCourseMap.has(name)) {
+      nameToCourseMap.set(name, []);
+    }
+    nameToCourseMap.get(name)!.push(course);
+  }
+  
+  // 更新课程状态并找出未完成的课程
+  const incompleteCourses: CourseItem[] = [];
+  const processedCourseIds = new Set<string>();
+  
+  for (const element of allCourseElements) {
+    const elementName = element.textContent?.trim() || "";
+    const matchingCourses = nameToCourseMap.get(elementName) || [];
+    
+    // 找到第一个未处理的匹配课程
+    let course: CourseItem | undefined = matchingCourses.find(c => !processedCourseIds.has(c.id));
+    
+    if (!course) {
+      continue; // 可能是新课程，跳过
+    }
+    
+    processedCourseIds.add(course.id);
+    
+    // 更新元素引用（DOM可能已更新）
+    course.element = element;
+    
+    // 重新检查课程是否已完成
+    const isCompleted = isCourseCompleted(element);
+    
+    if (isCompleted) {
+      // 如果已完成，更新状态
+      if (course.status !== "completed") {
+        console.log(`✅ 课程已完成: ${course.name}`);
+        course.status = "completed";
+        course.error = undefined;
+        course.retryCount = 0;
+      }
+    } else {
+      // 如果未完成，检查是否需要补做
+      // 如果是因为跳过考试导致的，标记为已完成（跳过考试是预期行为）
+      if (course.status === "skipped" && course.error && 
+          (course.error.includes("考试") || course.error.includes("测试"))) {
+        console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成`);
+        course.status = "completed";
+        course.error = undefined;
+        course.retryCount = 0;
+        continue; // 跳过考试是预期行为，不需要补做
+      }
+      
+      if (course.status === "completed" || course.status === "processing") {
+        // 之前标记为完成或处理中，但实际未完成，需要补做
+        console.log(`⚠️ 课程未完成，需要补做: ${course.name}`);
+        course.status = "pending";
+        incompleteCourses.push(course);
+      } else if (course.status === "pending" || course.status === "error") {
+        // 之前就是未完成或错误状态，也需要补做
+        // 但如果错误是因为跳过考试，不需要补做
+        if (course.status === "error" && course.error && 
+            (course.error.includes("考试") || course.error.includes("测试"))) {
+          console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成`);
+          course.status = "completed";
+          course.error = undefined;
+          course.retryCount = 0;
+          continue;
+        }
+        incompleteCourses.push(course);
+      }
+    }
+  }
+  
+  // 处理没有匹配到元素的课程（可能已被删除或隐藏）
+  for (const course of courseItemsList) {
+    if (!processedCourseIds.has(course.id)) {
+      // 如果课程没有匹配到元素，检查是否需要补做
+      if (course.status === "pending" || course.status === "error") {
+        // 如果是因为跳过考试导致的，标记为已完成
+        if (course.error && (course.error.includes("考试") || course.error.includes("测试"))) {
+          console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成`);
+          course.status = "completed";
+          course.error = undefined;
+          course.retryCount = 0;
+          continue;
+        }
+        
+        // 尝试重新查找元素
+        const allElements = getCourseList();
+        for (const element of allElements) {
+          const elementName = element.textContent?.trim() || "";
+          if (elementName === course.name.trim()) {
+            course.element = element;
+            const isCompleted = isCourseCompleted(element);
+            if (!isCompleted) {
+              incompleteCourses.push(course);
+            } else {
+              course.status = "completed";
+              course.retryCount = 0;
+              course.error = undefined;
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  updateCourseList();
+  
+  if (incompleteCourses.length === 0) {
+    console.log("✅ 所有课程都已完成，无需补做");
+    return;
+  }
+  
+  console.log(`📝 发现 ${incompleteCourses.length} 个未完成的课程，开始补做...`);
+  
+  // 过滤选中的课程（如果指定了）
+  let coursesToRetry = incompleteCourses;
+  if (selectedCourseIds && selectedCourseIds.length > 0) {
+    coursesToRetry = incompleteCourses.filter(c => selectedCourseIds.includes(c.id));
+  }
+  
+  // 再次过滤：排除因为跳过考试而跳过的课程
+  coursesToRetry = coursesToRetry.filter(c => {
+    if (c.status === "skipped" && c.error && 
+        (c.error.includes("考试") || c.error.includes("测试"))) {
+      // 标记为已完成
+      console.log(`✅ 课程 ${c.name} 因跳过考试而标记为完成（补做检查）`);
+      c.status = "completed";
+      c.error = undefined;
+      c.retryCount = 0;
+      return false; // 不加入补做列表
+    }
+    return true;
+  });
+  
+  if (coursesToRetry.length === 0) {
+    console.log("没有需要补做的课程");
+    updateCourseList();
+    return;
+  }
+  
+  // 对每个未完成的课程进行补做（最多3次）
+  const maxRetries = 3;
+  
+  for (const course of coursesToRetry) {
+    if (!isRunning) {
+      break;
+    }
+    
+    // 初始化补做次数
+    if (course.retryCount === undefined) {
+      course.retryCount = 0;
+    }
+    
+    // 如果已经补做过3次，标记为错误并跳过
+    if (course.retryCount >= maxRetries) {
+      console.log(`❌ 课程 ${course.name} 已补做 ${maxRetries} 次仍失败，停止补做`);
+      course.status = "error";
+      course.error = `补做 ${maxRetries} 次后仍无法完成`;
+      updateCourseList();
+      continue;
+    }
+    
+    // 检查课程元素是否已完成（可能在刷新后已完成）
+    if (course.element && isCourseCompleted(course.element)) {
+      console.log(`✅ 课程 ${course.name} 在刷新后已完成，跳过补做`);
+      course.status = "completed";
+      course.retryCount = 0;
+      course.error = undefined;
+      updateCourseList();
+      continue;
+    }
+    
+    // 进行补做
+    course.retryCount++;
+    console.log(`🔄 补做课程 ${course.name} (第 ${course.retryCount}/${maxRetries} 次)...`);
+    
+    course.status = "processing";
+    updateCourseList();
+    
+    try {
+      // 重新处理课程
+      await processCourse(course, courseItemsList.indexOf(course), courseItemsList.length);
+      
+      // 等待一段时间后再次检查是否完成
+      await wait(2000);
+      
+      // 检查是否因为跳过考试而被标记为 skipped
+      if (course.status === "skipped" && course.error && 
+          (course.error.includes("考试") || course.error.includes("测试"))) {
+        // 跳过考试是预期行为，标记为已完成
+        console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成（补做成功）`);
+        course.status = "completed";
+        course.retryCount = 0;
+        course.error = undefined;
+      } else if (course.element && isCourseCompleted(course.element)) {
+        // 重新检查课程是否已完成
+        console.log(`✅ 课程 ${course.name} 补做成功`);
+        course.status = "completed";
+        course.retryCount = 0;
+        course.error = undefined;
+      } else {
+        console.log(`⚠️ 课程 ${course.name} 补做后仍未完成`);
+        course.status = "pending";
+        // 如果补做后仍未完成，但不计入失败次数（因为可能只是因为跳过考试）
+        // 只有在确实无法完成时才标记为错误
+        if (course.retryCount >= maxRetries) {
+          // 检查最后一次失败是否是因为跳过考试
+          if (course.error && (course.error.includes("考试") || course.error.includes("测试"))) {
+            // 如果是因为跳过考试，标记为已完成
+            console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成（3次补做后）`);
+            course.status = "completed";
+            course.retryCount = 0;
+            course.error = undefined;
+          } else {
+            course.status = "error";
+            course.error = `补做 ${maxRetries} 次后仍无法完成`;
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error(`补做课程 ${course.name} 时出错:`, error);
+      // 检查错误是否与考试相关
+      const errorMessage = error.message || "补做失败";
+      if (errorMessage.includes("考试") || errorMessage.includes("测试")) {
+        // 如果错误是因为跳过考试，标记为已完成
+        console.log(`✅ 课程 ${course.name} 因跳过考试而标记为完成（补做时）`);
+        course.status = "completed";
+        course.retryCount = 0;
+        course.error = undefined;
+      } else {
+        course.status = "error";
+        course.error = errorMessage;
+        if (course.retryCount >= maxRetries) {
+          course.error = `补做 ${maxRetries} 次后仍无法完成`;
+        }
+      }
+    }
+    
+    updateCourseList();
+    await wait(defaultConfig.waitAfterClick);
+  }
+  
+  console.log("📋 补做流程完成");
 }
 
 // 重试单个课程

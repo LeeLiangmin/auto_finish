@@ -28,6 +28,7 @@ export interface CourseItem {
   element: Element | null; // 在 content script 中使用
   status: "pending" | "processing" | "completed" | "error" | "skipped";
   error?: string;
+  retryCount?: number; // 补做次数
 }
 
 // 进度信息
